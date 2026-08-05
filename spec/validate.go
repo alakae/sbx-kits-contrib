@@ -22,8 +22,9 @@ var placeholderPattern = regexp.MustCompile(`\$\{[^}]+\}`)
 
 // lockedPathPattern matches a dotted YAML path: lowercase letter or digit
 // start, then segments of letters/digits separated by single dots, e.g.
-// "agent.image" or "network.allowedDomains". Used only for well-formedness;
-// the consumer that performs the merge decides which paths are meaningful.
+// "sandbox.image" or "permissions.network.allow". Used only for
+// well-formedness; the consumer that performs the merge decides which paths
+// are meaningful.
 var lockedPathPattern = regexp.MustCompile(`^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9]*)*$`)
 
 // octalModePattern matches file mode strings: 3 or 4 octal digits, with an
@@ -317,6 +318,26 @@ func ValidateArtifact(a *Artifact) error {
 	if err := ValidateCommandsPolicy(a.Commands); err != nil {
 		return err
 	}
+	for i, c := range a.Credentials {
+		// SPEC-v2 §5.4 makes service REQUIRED on every credential entry: it is
+		// the identity the user-side bindings file matches on. For OAuth it
+		// carries what v2 moved off the OAuth block onto the parent
+		// Credential, and both engine entry points reject an empty one at
+		// runtime (the proxy's NewOAuthInterceptorFromConfig, and the
+		// configure hook's "oauth service name cannot be empty").
+		//
+		// §5.4 also specifies a lowercase-kebab charset. That is deliberately
+		// NOT enforced: the v1 fold synthesizes service keys from env-var
+		// names via deriveServiceKey, which keeps underscores for any
+		// multi-word variable (SAMPLE_PROXY_TOKEN -> "sample_proxy"), so
+		// enforcing the pattern would reject v1 kits that load today.
+		if c.Service == "" {
+			return fmt.Errorf("artifact: credentials[%d]: service is required", i)
+		}
+		if err := ValidateOAuth(c.OAuth); err != nil {
+			return fmt.Errorf("artifact: credentials[%d] (service %q): %w", i, c.Service, err)
+		}
+	}
 
 	for i, f := range a.Files {
 		if f.Target != TargetHome && f.Target != TargetWorkspace {
@@ -419,6 +440,50 @@ func ValidateOAuthPolicy(p *OAuthPolicy) error {
 		}
 		if p.CredentialFile.Template == "" && len(p.CredentialFile.Structure) == 0 {
 			return fmt.Errorf("artifact: oauth: credentialFile requires either template or structure")
+		}
+	}
+	return nil
+}
+
+// ValidateOAuth validates a v2 credentials[].oauth block for structural
+// completeness. Same requirements as ValidateOAuthPolicy (its v1
+// counterpart), minus Service — that identity lives on the parent
+// Credential, not on OAuth itself — and with sentinels not required when
+// Passthrough is set: passthrough's whole point is opting out of sentinel
+// masking, so an entry that only routes+refreshes a token without ever
+// substituting a sentinel for it (e.g. resourceHosts-only OAuth routing)
+// legitimately has no sentinels block.
+//
+// Before this existed, neither of these was caught until much later: a
+// missing sentinels block (outside the passthrough case) loads and runs
+// with real OAuth tokens never masked in the sandbox, and a credentialFile
+// with neither template nor structure loads clean and only fails at first
+// `sbx create`, as an opaque engine error with the real cause buried in
+// daemon.log rather than at `sbx kit validate` time.
+func ValidateOAuth(o *OAuth) error {
+	if o == nil {
+		return nil
+	}
+	if o.TokenEndpoint.Host == "" {
+		return fmt.Errorf("oauth: tokenEndpoint.host is required")
+	}
+	if o.TokenEndpoint.Path == "" {
+		return fmt.Errorf("oauth: tokenEndpoint.path is required")
+	}
+	if !o.Passthrough {
+		if o.Sentinels.AccessToken == "" {
+			return fmt.Errorf("oauth: sentinels.accessToken is required")
+		}
+		if o.Sentinels.RefreshToken == "" {
+			return fmt.Errorf("oauth: sentinels.refreshToken is required")
+		}
+	}
+	if o.CredentialFile != nil {
+		if o.CredentialFile.Path == "" {
+			return fmt.Errorf("oauth: credentialFile.path is required")
+		}
+		if o.CredentialFile.Template == "" && len(o.CredentialFile.Structure) == 0 {
+			return fmt.Errorf("oauth: credentialFile requires either template or structure")
 		}
 	}
 	return nil
