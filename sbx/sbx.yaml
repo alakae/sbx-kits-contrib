@@ -16,9 +16,10 @@ licenses: [SEE LICENSE IN https://github.com/docker/sbx-releases]
 # Requirements on the workload: Docker with buildx only if local v3 kits are
 # to be loaded.
 #
-# SIGN-IN: some commands refuse while signed out. Sign in with a Docker
-# personal access token (see the kit README); the PAT then lives inside the
-# sandbox.
+# SIGN-IN: some commands refuse while signed out. Two routes (see the kit
+# README): a Docker personal access token, which then lives inside the
+# sandbox, or the proxy-managed device flow declared below, which keeps the
+# real tokens on the host.
 
 args:
   version:
@@ -26,6 +27,19 @@ args:
     pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
     description: sbx release to install (a docker/sbx-releases tag without the v)
     buildArg: SBX_VERSION
+  # Create-phase arg (no env/buildArg): expanded into the credential config
+  # at sandbox create. sbx parses its access token as a JWT (claims, no
+  # signature check) and reads the username from it, so the proxy-managed
+  # placeholder has to be JWT-shaped. The pattern admits only placeholders:
+  # fixed header, signature segment "proxy-managed" — a real token cannot
+  # match, so none can leak into shell history or sandbox state this way.
+  # The kit README generates it from the Docker ID. The default is the same
+  # placeholder for the username "proxy-managed", so sbx does not prompt for
+  # the arg; an empty value would leave the credential unusable.
+  dockerSentinel:
+    default: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2FwaS5kb2NrZXIuY29tLyIsImF1ZCI6Imh0dHBzOi8vaHViLmRvY2tlci5jb20iLCJzdWIiOiJwcm94eS1tYW5hZ2VkIiwiZXhwIjo0MTAyNDQ0ODAwLCJpYXQiOjE3NjcyMjU2MDAsImp0aSI6InByb3h5LW1hbmFnZWQiLCJzY29wZSI6IiIsInNvdXJjZSI6eyJpZCI6InByb3h5LW1hbmFnZWQiLCJ0eXBlIjoicGF0In0sImh0dHBzOi8vaHViLmRvY2tlci5jb20iOnsidXNlcm5hbWUiOiJwcm94eS1tYW5hZ2VkIiwidXVpZCI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMCIsImVtYWlsIjoicHJveHktbWFuYWdlZEBleGFtcGxlLmludmFsaWQiLCJyb2xlcyI6W10sInNlc3Npb25faWQiOiJwcm94eS1tYW5hZ2VkIiwic291cmNlIjoicGF0In19.cHJveHktbWFuYWdlZA"
+    pattern: '^eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9_-]+\.cHJveHktbWFuYWdlZA$'
+    description: JWT-shaped placeholder access token (see the kit README)
 
 provides: ["sbx@${{ kit.args.version }}"]
 
@@ -44,3 +58,22 @@ capabilities:
           - registry-1.docker.io             # kit pulls
           - auth.docker.io
           - production.cloudfront.docker.com # blob downloads
+
+  # Proxy-managed device-flow sign-in: `sbx login` runs the device flow
+  # inside the sandbox, the proxy keeps the real tokens on the host and hands
+  # the sandbox the sentinels below.
+  - type: com.docker.sandbox/credential@1
+    optional: true
+    description: Docker account for sbx (device-flow sign-in inside the sandbox)
+    config:
+      service: docker
+      phase: runtime
+      oauth:
+        tokenEndpoint: {host: login.docker.com, path: /oauth/token}
+        resourceHosts:
+          - hub.docker.com
+        sentinels:
+          accessToken: "${{ kit.args.dockerSentinel }}"
+          refreshToken: dkr-ort-proxy-managed
+        # No credentialFile: sbx keeps its session age-encrypted, a format
+        # the runtime cannot render. Each new sandbox signs in once.

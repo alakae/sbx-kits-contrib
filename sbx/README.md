@@ -38,6 +38,8 @@ sbx kit inspect docker.io/docker/sbx-kit-shell:1.0.0
 
 sbx keeps the session inside the sandbox, so use a dedicated read-only PAT.
 
+To keep the real tokens on the host instead, create the sandbox with a sentinel (see [The credential and `dockerSentinel`](#the-credential-and-dockersentinel)) and run `sbx login` inside it, which signs in with the device flow.
+
 Without a sign-in, some commands still work with `--offline`, for example on local v1/v2 kit directories:
 
 ```console
@@ -71,6 +73,19 @@ All hosts are runtime-only; the install happens at build time, so the sandbox ne
 - `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com` — pulling kits by reference
 
 `api.sandboxes-cloud.docker.com` (`sbx --cloud`) is left out: untested.
+
+### The credential and `dockerSentinel`
+
+The descriptor declares an optional `credential@1` for the proxy-managed route: `sbx login` runs the device flow inside the sandbox while the real tokens stay on the host. sbx parses its access token as a JWT and reads the username from it, so the placeholder has to be JWT-shaped. The optional `dockerSentinel` arg carries it into the credential config at sandbox create. Without the arg, a placeholder for the username `proxy-managed` is used, so sbx does not prompt; pass your own to have sbx show your Docker ID. The `SENTINEL` line below builds one that carries no secret (fixed header, your Docker ID, dummy ids, a far-future expiry, signature segment `proxy-managed`), and the arg's `pattern` admits only such placeholders, so a real token cannot be passed this way:
+
+```console
+DOCKER_ID=<docker-id>
+SENTINEL="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.$(printf '{"iss":"https://api.docker.com/","aud":"https://hub.docker.com","sub":"proxy-managed","exp":4102444800,"iat":1767225600,"jti":"proxy-managed","scope":"","source":{"id":"proxy-managed","type":"pat"},"https://hub.docker.com":{"username":"%s","uuid":"00000000-0000-0000-0000-000000000000","email":"proxy-managed@example.invalid","roles":[],"session_id":"proxy-managed","source":"pat"}}' "$DOCKER_ID" | base64 | tr '+/' '-_' | tr -d '=\n').cHJveHktbWFuYWdlZA"
+sbx run docker.io/docker/sbx-kit-shell:1.0.0 \
+  --kit docker.io/sbx/sbx:latest \
+  --kit-arg sbx.dockerSentinel="$SENTINEL" \
+  .
+```
 
 ## Limitations
 
